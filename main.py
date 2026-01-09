@@ -2,6 +2,7 @@ import os
 import glob
 import torch
 import warnings
+import subprocess
 from pathlib import Path
 
 # Filter warnings to keep output clean
@@ -20,6 +21,36 @@ def setup_directories():
 def transcribe_bytedance(audio_path, output_dir):
     try:
         from piano_transcription_inference import PianoTranscription, sample_rate, load_audio
+
+        def load_audio_fallback(path, sr):
+            try:
+                (audio, _) = load_audio(path, sr=sr, mono=True)
+                return audio
+            except Exception:
+                pass
+
+            candidate_path = Path(path)
+            if candidate_path.suffix.lower() in (".mp3", ".m4a"):
+                converted_dir = Path("Audio") / "_converted"
+                converted_dir.mkdir(parents=True, exist_ok=True)
+                converted_path = converted_dir / f"{candidate_path.stem}.wav"
+                if (not converted_path.exists() or
+                        converted_path.stat().st_mtime < candidate_path.stat().st_mtime):
+                    subprocess.run(
+                        [
+                            "afconvert",
+                            "-f", "WAVE",
+                            "-d", "LEI16",
+                            str(candidate_path),
+                            str(converted_path),
+                        ],
+                        check=True,
+                    )
+                candidate_path = converted_path
+
+            import librosa
+            audio, _ = librosa.load(str(candidate_path), sr=sr, mono=True)
+            return audio
         
         print(f"  [ByteDance] Processing: {os.path.basename(audio_path)}")
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -27,8 +58,8 @@ def transcribe_bytedance(audio_path, output_dir):
         # Initialize transcriptor
         transcriptor = PianoTranscription(device=device, checkpoint_path=None)
         
-        # Load audio
-        (audio, _) = load_audio(audio_path, sr=sample_rate, mono=True)
+        # Load audio with a fallback that uses afconvert on macOS for MP3/M4A.
+        audio = load_audio_fallback(audio_path, sample_rate)
         
         # Output path
         midi_filename = os.path.splitext(os.path.basename(audio_path))[0] + ".mid"
