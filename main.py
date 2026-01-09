@@ -75,7 +75,7 @@ def transcribe_bytedance(audio_path, output_dir):
 def transcribe_basic_pitch(audio_path, output_dir):
     try:
         try:
-            from basic_pitch.inference import predict_and_save
+            from basic_pitch.inference import predict_and_save, ICASSP_2022_MODEL_PATH
         except ImportError:
             print("  [BasicPitch] Library not installed. Skipping.")
             return
@@ -92,7 +92,8 @@ def transcribe_basic_pitch(audio_path, output_dir):
             save_midi=True,
             sonify_midi=False,
             save_model_outputs=False,
-            save_notes=False
+            save_notes=False,
+            model_or_model_path=ICASSP_2022_MODEL_PATH,
         )
         print(f"  [BasicPitch] Saved to: {output_dir}")
         
