@@ -1,0 +1,5 @@
+numpy
+librosa
+torch
+piano_transcription_inference
+basic-pitch
