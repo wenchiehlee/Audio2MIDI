@@ -4,6 +4,7 @@ import torch
 import warnings
 import subprocess
 from pathlib import Path
+from mido import MidiFile, MidiTrack, MetaMessage
 
 # Filter warnings to keep output clean
 warnings.filterwarnings("ignore")
@@ -12,11 +13,102 @@ def setup_directories():
     base_output = Path("Midi")
     bytedance_dir = base_output / "ByteDance"
     basicpitch_dir = base_output / "BasicPitch"
+    splits_bytedance_dir = base_output / "Splits" / "ByteDance"
+    splits_basicpitch_dir = base_output / "Splits" / "BasicPitch"
     
     bytedance_dir.mkdir(parents=True, exist_ok=True)
     basicpitch_dir.mkdir(parents=True, exist_ok=True)
+    splits_bytedance_dir.mkdir(parents=True, exist_ok=True)
+    splits_basicpitch_dir.mkdir(parents=True, exist_ok=True)
     
-    return bytedance_dir, basicpitch_dir
+    return bytedance_dir, basicpitch_dir, splits_bytedance_dir, splits_basicpitch_dir
+
+def split_midi_two_hands(input_path, simple_output_path, smart_output_path, split_note=60):
+    midi = MidiFile(input_path)
+    events = []
+    abs_time = 0
+    idx = 0
+    for track in midi.tracks:
+        abs_time = 0
+        for msg in track:
+            abs_time += msg.time
+            events.append((abs_time, idx, msg))
+            idx += 1
+
+    note_pitches = [
+        msg.note for (_, _, msg) in events
+        if msg.type == "note_on" and msg.velocity > 0
+    ]
+
+    def kmeans_1d(values, max_iter=20):
+        if not values:
+            return None
+        c1 = min(values)
+        c2 = max(values)
+        if c1 == c2:
+            return (c1, c2)
+        for _ in range(max_iter):
+            cluster1 = []
+            cluster2 = []
+            for v in values:
+                if abs(v - c1) <= abs(v - c2):
+                    cluster1.append(v)
+                else:
+                    cluster2.append(v)
+            new_c1 = sum(cluster1) / len(cluster1) if cluster1 else c1
+            new_c2 = sum(cluster2) / len(cluster2) if cluster2 else c2
+            if abs(new_c1 - c1) < 1e-6 and abs(new_c2 - c2) < 1e-6:
+                break
+            c1, c2 = new_c1, new_c2
+        return tuple(sorted((c1, c2)))
+
+    smart_centroids = kmeans_1d(note_pitches)
+
+    def assign_hand(note, method):
+        if method == "simple" or smart_centroids is None:
+            return "RH" if note >= split_note else "LH"
+        c1, c2 = smart_centroids
+        return "RH" if abs(note - c2) < abs(note - c1) else "LH"
+
+    def build_tracks(method, output_path):
+        meta_events = []
+        rh_events = []
+        lh_events = []
+        active = {}
+
+        for time, order, msg in sorted(events, key=lambda item: (item[0], item[1])):
+            if msg.type in ("note_on", "note_off"):
+                is_on = msg.type == "note_on" and msg.velocity > 0
+                key = (msg.channel, msg.note)
+                if is_on:
+                    hand = assign_hand(msg.note, method)
+                    active[key] = hand
+                else:
+                    hand = active.pop(key, assign_hand(msg.note, method))
+                target = rh_events if hand == "RH" else lh_events
+                target.append((time, order, msg))
+            else:
+                meta_events.append((time, order, msg))
+
+        def build_track(event_list):
+            track = MidiTrack()
+            last_time = 0
+            for time, _, msg in sorted(event_list, key=lambda item: (item[0], item[1])):
+                delta = time - last_time
+                last_time = time
+                track.append(msg.copy(time=delta))
+            if not track or track[-1].type != "end_of_track":
+                track.append(MetaMessage("end_of_track", time=0))
+            return track
+
+        out_midi = MidiFile(ticks_per_beat=midi.ticks_per_beat)
+        out_midi.tracks.append(build_track(meta_events))
+        out_midi.tracks.append(build_track(rh_events))
+        out_midi.tracks.append(build_track(lh_events))
+        out_midi.save(output_path)
+
+    build_tracks("simple", simple_output_path)
+    build_tracks("smart", smart_output_path)
 
 def transcribe_bytedance(audio_path, output_dir):
     try:
@@ -64,10 +156,18 @@ def transcribe_bytedance(audio_path, output_dir):
         # Output path
         midi_filename = os.path.splitext(os.path.basename(audio_path))[0] + ".mid"
         midi_path = output_dir / midi_filename
-        
+
         # Transcribe
         transcriptor.transcribe(audio, str(midi_path))
         print(f"  [ByteDance] Saved to: {midi_path}")
+
+        splits_base = Path("Midi") / "Splits" / "ByteDance"
+        splits_base.mkdir(parents=True, exist_ok=True)
+        split_simple = splits_base / f"{Path(midi_filename).stem}_simple.mid"
+        split_smart = splits_base / f"{Path(midi_filename).stem}_smart.mid"
+        split_midi_two_hands(midi_path, split_simple, split_smart)
+        print(f"  [Split] Saved to: {split_simple}")
+        print(f"  [Split] Saved to: {split_smart}")
         
     except Exception as e:
         print(f"  [ByteDance] Error: {e}")
@@ -96,6 +196,17 @@ def transcribe_basic_pitch(audio_path, output_dir):
             model_or_model_path=ICASSP_2022_MODEL_PATH,
         )
         print(f"  [BasicPitch] Saved to: {output_dir}")
+
+        midi_filename = os.path.splitext(os.path.basename(audio_path))[0] + "_basic_pitch.mid"
+        midi_path = output_dir / midi_filename
+        if midi_path.exists():
+            splits_base = Path("Midi") / "Splits" / "BasicPitch"
+            splits_base.mkdir(parents=True, exist_ok=True)
+            split_simple = splits_base / f"{Path(midi_filename).stem}_simple.mid"
+            split_smart = splits_base / f"{Path(midi_filename).stem}_smart.mid"
+            split_midi_two_hands(midi_path, split_simple, split_smart)
+            print(f"  [Split] Saved to: {split_simple}")
+            print(f"  [Split] Saved to: {split_smart}")
         
     except Exception as e:
         print(f"  [BasicPitch] Error: {e}")
@@ -104,7 +215,7 @@ def main():
     print("=== Audio to MIDI Converter ===")
     print("Libraries: ByteDance (piano_transcription_inference) & Spotify (basic-pitch)")
     
-    bytedance_dir, basicpitch_dir = setup_directories()
+    bytedance_dir, basicpitch_dir, _, _ = setup_directories()
     
     # Extensions to look for
     extensions = ['*.wav', '*.mp3', '*.flac', '*.m4a']
