@@ -58,6 +58,19 @@ This project converts piano audio recordings into MIDI files using state-of-the-
         *   `_simple.mid` uses a middle-C split (MIDI 60).
         *   `_smart.mid` uses a 2-cluster pitch split.
 
+## MuseScore Notes (Playback vs. MIDI)
+
+MuseScore imports MIDI by converting it into notation (quantizing timing and
+guessing voices/hands). That means MuseScore playback can sound different from
+a raw MIDI player.
+
+Tips to minimize differences:
+*   Use a very short minimum note value (e.g., 1/64 or 1/128) in the MIDI
+    import dialog.
+*   Disable any "simplify" or "reduce ties" options.
+*   Avoid auto hand-splitting on import; split hands manually later.
+*   Keep the original MIDI for playback verification in a DAW or media player.
+
 ## Moving to Another Machine (e.g., Mac Mini)
 
 1.  Copy this entire folder to your Mac.
