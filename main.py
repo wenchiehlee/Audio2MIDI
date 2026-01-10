@@ -3,6 +3,7 @@ import glob
 import torch
 import warnings
 import subprocess
+import shutil
 from pathlib import Path
 from mido import MidiFile, MidiTrack, MetaMessage
 
@@ -22,6 +23,52 @@ def setup_directories():
     splits_basicpitch_dir.mkdir(parents=True, exist_ok=True)
     
     return bytedance_dir, basicpitch_dir, splits_bytedance_dir, splits_basicpitch_dir
+
+def ensure_wav_for_audio(path):
+    candidate_path = Path(path)
+    if candidate_path.suffix.lower() not in (".mp3", ".m4a"):
+        return candidate_path
+
+    converted_dir = Path("Audio") / "_converted"
+    converted_dir.mkdir(parents=True, exist_ok=True)
+    converted_path = converted_dir / f"{candidate_path.stem}.wav"
+
+    if (not converted_path.exists() or
+            converted_path.stat().st_mtime < candidate_path.stat().st_mtime):
+        try:
+            subprocess.run(
+                [
+                    "afconvert",
+                    "-f", "WAVE",
+                    "-d", "LEI16",
+                    str(candidate_path),
+                    str(converted_path),
+                ],
+                check=True,
+            )
+        except Exception:
+            if shutil.which("ffmpeg") is None:
+                raise
+            subprocess.run(
+                [
+                    "ffmpeg",
+                    "-y",
+                    "-i",
+                    str(candidate_path),
+                    "-acodec",
+                    "pcm_s16le",
+                    "-ar",
+                    "44100",
+                    "-ac",
+                    "1",
+                    str(converted_path),
+                ],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+
+    return converted_path
 
 def split_midi_two_hands(input_path, simple_output_path, smart_output_path, split_note=60):
     midi = MidiFile(input_path)
@@ -121,24 +168,7 @@ def transcribe_bytedance(audio_path, output_dir):
             except Exception:
                 pass
 
-            candidate_path = Path(path)
-            if candidate_path.suffix.lower() in (".mp3", ".m4a"):
-                converted_dir = Path("Audio") / "_converted"
-                converted_dir.mkdir(parents=True, exist_ok=True)
-                converted_path = converted_dir / f"{candidate_path.stem}.wav"
-                if (not converted_path.exists() or
-                        converted_path.stat().st_mtime < candidate_path.stat().st_mtime):
-                    subprocess.run(
-                        [
-                            "afconvert",
-                            "-f", "WAVE",
-                            "-d", "LEI16",
-                            str(candidate_path),
-                            str(converted_path),
-                        ],
-                        check=True,
-                    )
-                candidate_path = converted_path
+            candidate_path = ensure_wav_for_audio(path)
 
             import librosa
             audio, _ = librosa.load(str(candidate_path), sr=sr, mono=True)
@@ -181,13 +211,14 @@ def transcribe_basic_pitch(audio_path, output_dir):
             return
 
         print(f"  [BasicPitch] Processing: {os.path.basename(audio_path)}")
+        input_path = ensure_wav_for_audio(audio_path)
         
         # Output path - basic_pitch automatically adds _basic_pitch.mid, so we just give the dir
         # However, to keep names clean, we might need to rename, but let's stick to default for now
         
         # predict_and_save takes a list of input paths
         predict_and_save(
-            [str(audio_path)],
+            [str(input_path)],
             str(output_dir),
             save_midi=True,
             sonify_midi=False,
